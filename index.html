@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drum VR</title>
+<style>
+:root{--bg:#fff;--fg:#111;--mut:#555;--card:#f1f3f7;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171c;--fg:#eee;--mut:#9aa3b0;--card:#222630}}
+:root[data-theme="dark"]{--bg:#15171c;--fg:#eee;--mut:#9aa3b0;--card:#222630}
+body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}
+main{max-width:30rem;padding:1.5rem}
+button{font:inherit;font-weight:600;padding:.9rem 1.6rem;border:0;border-radius:12px;background:#2b6cff;color:#fff;width:100%}
+button:disabled{opacity:.4}
+.card{background:var(--card);border-radius:12px;padding:.8rem 1rem;margin:1rem 0;color:var(--mut);font-size:.95rem}
+</style></head><body><main>
+<h1>🥁 Drum VR</h1>
+<p>Ноты падают на твою установку. Шаг 3: сначала отметишь элементы контроллером.</p>
+<div class="card" id="st">Проверяю AR…</div>
+<div class="card" id="midi">MIDI: проверяю…</div>
+<button id="go" disabled>Войти в AR</button>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+// Элементы установки: позиция (x,y,z) относительно центра перед тобой, цвет, MIDI-ноты
+const PADS={
+ hihat:{p:[-.55,.05,.0],c:0xffd23f,r:.14,m:[42,44,46]},
+ snare:{p:[-.2,-.05,.15],c:0xff5a5f,r:.16,m:[38,40]},
+ kick:{p:[0,-.55,.15],c:0x8e7dff,r:.16,m:[35,36]},
+ tom1:{p:[-.15,.2,-.05],c:0x3ddc97,r:.13,m:[48,50]},
+ tom2:{p:[.2,.2,-.05],c:0x2bb6ff,r:.13,m:[47,45]},
+ floor:{p:[.5,-.1,.1],c:0xff9f1c,r:.17,m:[43,41]},
+ crash:{p:[-.5,.4,-.1],c:0xffffff,r:.14,m:[49,57]},
+ ride:{p:[.55,.35,-.1],c:0xc0c0ff,r:.15,m:[51,59]}
+};
+// Ритм: 16 шагов (шестнадцатые), bpm
+const BPM=80, STEP=60/BPM/4, BAR=16*STEP, FALL=2, H=1;
+const PAT={hihat:[0,2,4,6,8,10,12,14],kick:[0,8,10],snare:[4,12],crash:[0]};
+const EV=[];for(const k in PAT)PAT[k].forEach(s=>EV.push({k,s}));EV.sort((a,b)=>a.s-b.s);
+
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(70,1,.01,20);
+const renderer=new THREE.WebGLRenderer({alpha:true,antialias:true});
+renderer.xr.enabled=true;renderer.setClearColor(0,0);
+const rig=new THREE.Group();scene.add(rig);
+for(const k in PADS){const d=PADS[k];
+ d.mat=new THREE.MeshBasicMaterial({color:d.c,transparent:true,opacity:.35});
+ d.mesh=new THREE.Mesh(new THREE.CylinderGeometry(d.r,d.r,.015,32),d.mat);
+ d.p=[d.p[0],d.p[1]+.8,d.p[2]-.8];d.mesh.position.set(...d.p);rig.add(d.mesh);d.flash=0;}
+let notes=[],start=0,spawned=-1,mode='idle',ci=0;
+const ORDER=['hihat','snare','tom1','tom2','floor','crash','ride','kick'];
+const NAMES={hihat:'хэт',snare:'малый',tom1:'том 1',tom2:'том 2',floor:'напольный том',crash:'крэш',ride:'райд',kick:'бочка'};
+const tc=document.createElement('canvas');tc.width=1024;tc.height=256;const tx=new THREE.CanvasTexture(tc);
+const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tx,transparent:true,depthTest:false}));
+label.scale.set(.8,.2,1);label.position.set(0,1.45,-.8);scene.add(label);
+function say(t){const g=tc.getContext('2d');g.clearRect(0,0,1024,256);g.fillStyle='rgba(0,0,0,.65)';g.fillRect(0,40,1024,176);g.fillStyle='#fff';g.font='bold 52px sans-serif';g.textAlign='center';g.fillText(t,512,150);tx.needsUpdate=true;}
+function ask(){if(ci>=ORDER.length){mode='play';start=performance.now()/1000+FALL;spawned=-1;label.visible=false;return;}
+ say('Коснись: '+NAMES[ORDER[ci]]+' ('+(ci+1)+'/'+ORDER.length+'), нажми триггер');}
+const v3=new THREE.Vector3();
+[0,1].forEach(i=>{const c=renderer.xr.getController(i);scene.add(c);
+ c.add(new THREE.Mesh(new THREE.SphereGeometry(.015),new THREE.MeshBasicMaterial({color:0xffffff})));
+ c.addEventListener('selectstart',()=>{if(mode!=='calib')return;c.getWorldPosition(v3);const d=PADS[ORDER[ci]];d.p=[v3.x,v3.y,v3.z];d.mesh.position.copy(v3);ci++;ask();});
+ c.addEventListener('squeezestart',()=>{if(mode==='play'){mode='calib';ci=0;notes.forEach(n=>rig.remove(n.m));notes=[];label.visible=true;ask();}else if(mode==='calib'&&ci>0){ci--;ask();}});});
+const ng=new THREE.SphereGeometry(.045,16,12);
+function spawn(k,t){const m=new THREE.Mesh(ng,new THREE.MeshBasicMaterial({color:PADS[k].c}));rig.add(m);notes.push({k,t,m});}
+renderer.setAnimationLoop(()=>{
+ if(!renderer.xr.isPresenting)return;
+ if(mode==='calib'){for(const k in PADS)PADS[k].mat.opacity=k===ORDER[ci]?.55+.35*Math.sin(performance.now()/180):.15;renderer.render(scene,camera);return;}
+ const now=performance.now()/1000-start;
+ for(let b=Math.max(0,Math.floor(now/BAR));b<=Math.floor((now+FALL)/BAR);b++)
+  for(const e of EV){const t=b*BAR+e.s*STEP;if(t>spawned&&t<=now+FALL)spawn(e.k,t);}
+ spawned=Math.max(spawned,now+FALL);
+ notes=notes.filter(n=>{const dt=n.t-now,p=PADS[n.k].p;
+  if(dt<-.05){rig.remove(n.m);PADS[n.k].flash=1;return false;}
+  n.m.position.set(p[0],p[1]+Math.max(dt,0)/FALL*H,p[2]);return true;});
+ for(const k in PADS){const d=PADS[k];d.flash=Math.max(0,d.flash-.06);
+  d.mat.opacity=.35+d.flash*.65;d.mesh.scale.setScalar(1+d.flash*.25);}
+ renderer.render(scene,camera);
+});
+// Проверка MIDI: удар по настоящему барабану подсвечивает пэд
+const noteMap={};for(const k in PADS)PADS[k].m.forEach(n=>noteMap[n]=k);
+function onMidi(e){const [s,n,v]=e.data;if((s&0xf0)===0x90&&v>0&&noteMap[n])PADS[noteMap[n]].flash=1;}
+try{navigator.requestMIDIAccess().then(a=>{
+ const ins=[...a.inputs.values()];ins.forEach(i=>i.onmidimessage=onMidi);
+ $("midi").textContent=ins.length?"MIDI: найдено "+ins.map(i=>i.name).join(", "):"MIDI: устройств нет (это нормально на этом шаге)";
+ a.onstatechange=()=>{[...a.inputs.values()].forEach(i=>i.onmidimessage=onMidi);};
+}).catch(()=>$("midi").textContent="MIDI: нет доступа в этом браузере");}
+catch(e){$("midi").textContent="MIDI: не поддерживается. Во фрейме: "+(window.top!==window?"да":"нет")+", secure: "+window.isSecureContext+", браузер: "+navigator.userAgent.slice(-45);}
+// Вход в AR
+(async()=>{
+ const ok=navigator.xr&&await navigator.xr.isSessionSupported("immersive-ar").catch(()=>false);
+ $("st").textContent=ok?"AR доступен. Поставь очки так, чтобы установка была перед тобой.":"AR недоступен. Открой страницу в браузере Quest.";
+ $("go").disabled=!ok;
+})();
+$("go").onclick=async()=>{
+ try{const s=await navigator.xr.requestSession("immersive-ar",{optionalFeatures:["local-floor"]});
+  renderer.xr.setReferenceSpaceType("local-floor");await renderer.xr.setSession(s);
+  notes.forEach(n=>rig.remove(n.m));notes=[];mode='calib';ci=0;label.visible=true;ask();
+ }catch(e){$("st").textContent="Не вышло войти в AR: "+e.message;}
+};
+</script></body></html>
