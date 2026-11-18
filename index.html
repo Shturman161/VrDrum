@@ -9,93 +9,116 @@
 body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}
 main{max-width:30rem;padding:1.5rem}
 button{font:inherit;font-weight:600;padding:.9rem 1.6rem;border:0;border-radius:12px;background:#2b6cff;color:#fff;width:100%}
+button.alt{background:var(--card);color:var(--fg);margin-top:.6rem}
 button:disabled{opacity:.4}
 .card{background:var(--card);border-radius:12px;padding:.8rem 1rem;margin:1rem 0;color:var(--mut);font-size:.95rem}
 </style></head><body><main>
 <h1>🥁 Drum VR</h1>
-<p>Ноты падают на твою установку. Шаг 3: сначала отметишь элементы контроллером.</p>
+<p>Ноты падают на твою установку.</p>
 <div class="card" id="st">Проверяю AR…</div>
 <div class="card" id="midi">MIDI: проверяю…</div>
 <button id="go" disabled>Войти в AR</button>
+<button id="rst" class="alt">Сбросить запомненные ноты</button>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-// Элементы установки: позиция (x,y,z) относительно центра перед тобой, цвет, MIDI-ноты
+const ls={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}},del:k=>{try{localStorage.removeItem(k)}catch(e){}}};
+// Элементы: имя, позиция (м), цвет, радиус
 const PADS={
- hihat:{p:[-.55,.05,.0],c:0xffd23f,r:.14,m:[42,44,46]},
- snare:{p:[-.2,-.05,.15],c:0xff5a5f,r:.16,m:[38,40]},
- kick:{p:[0,-.55,.15],c:0x8e7dff,r:.16,m:[35,36]},
- tom1:{p:[-.15,.2,-.05],c:0x3ddc97,r:.13,m:[48,50]},
- tom2:{p:[.2,.2,-.05],c:0x2bb6ff,r:.13,m:[47,45]},
- floor:{p:[.5,-.1,.1],c:0xff9f1c,r:.17,m:[43,41]},
- crash:{p:[-.5,.4,-.1],c:0xffffff,r:.14,m:[49,57]},
- ride:{p:[.55,.35,-.1],c:0xc0c0ff,r:.15,m:[51,59]}
-};
-// Ритм: 16 шагов (шестнадцатые), bpm
-const BPM=80, STEP=60/BPM/4, BAR=16*STEP, FALL=2, H=1;
+ hihat:{n:'хэт',p:[-.55,.85,-.8],c:0xffd23f,r:.14},
+ snare:{n:'малый',p:[-.2,.75,-.65],c:0xff5a5f,r:.16},
+ tom1:{n:'том 1',p:[-.15,1,-.85],c:0x3ddc97,r:.13},
+ tom2:{n:'том 2',p:[.2,1,-.85],c:0x2bb6ff,r:.13},
+ floor:{n:'напольный том',p:[.5,.7,-.7],c:0xff9f1c,r:.17},
+ crash:{n:'крэш',p:[-.5,1.2,-.9],c:0xffffff,r:.14},
+ ride:{n:'райд',p:[.55,1.15,-.9],c:0xc0c0ff,r:.15},
+ kick:{n:'бочка',p:[0,.25,-.65],c:0x8e7dff,r:.16}};
+const ORDER=Object.keys(PADS);
+const BPM=80,STEP=60/BPM/4,BAR=16*STEP,FALL=2,H=1;
 const PAT={hihat:[0,2,4,6,8,10,12,14],kick:[0,8,10],snare:[4,12],crash:[0]};
 const EV=[];for(const k in PAT)PAT[k].forEach(s=>EV.push({k,s}));EV.sort((a,b)=>a.s-b.s);
+const sN=ls.get('drumvr-notes'),sL=ls.get('drumvr-layout');
+for(const k of ORDER){const d=PADS[k];d.m=(sN&&sN[k])||[];if(sL&&sL[k]){d.p=sL[k].p;d.r=sL[k].r;}}
 
 const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(70,1,.01,20);
 const renderer=new THREE.WebGLRenderer({alpha:true,antialias:true});
 renderer.xr.enabled=true;renderer.setClearColor(0,0);
-const rig=new THREE.Group();scene.add(rig);
-for(const k in PADS){const d=PADS[k];
+for(const k of ORDER){const d=PADS[k];
  d.mat=new THREE.MeshBasicMaterial({color:d.c,transparent:true,opacity:.35});
- d.mesh=new THREE.Mesh(new THREE.CylinderGeometry(d.r,d.r,.015,32),d.mat);
- d.p=[d.p[0],d.p[1]+.8,d.p[2]-.8];d.mesh.position.set(...d.p);rig.add(d.mesh);d.flash=0;}
-let notes=[],start=0,spawned=-1,mode='idle',ci=0,lastNote=null;
-const ORDER=['hihat','snare','tom1','tom2','floor','crash','ride','kick'];
-const NAMES={hihat:'хэт',snare:'малый',tom1:'том 1',tom2:'том 2',floor:'напольный том',crash:'крэш',ride:'райд',kick:'бочка'};
-const tc=document.createElement('canvas');tc.width=1024;tc.height=256;const tx=new THREE.CanvasTexture(tc);
-const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tx,transparent:true,depthTest:false}));
-label.scale.set(.8,.2,1);label.position.set(0,1.45,-.8);scene.add(label);
-function say(t,t2){const g=tc.getContext('2d');g.clearRect(0,0,1024,256);g.fillStyle='rgba(0,0,0,.65)';g.fillRect(0,20,1024,216);g.fillStyle='#fff';g.font='bold 40px sans-serif';g.textAlign='center';g.fillText(t,512,115);g.font='34px sans-serif';g.fillStyle='#ccc';g.fillText(t2||'',512,190);tx.needsUpdate=true;}
-function ask(){if(ci>=ORDER.length){mode='play';start=performance.now()/1000+FALL;spawned=-1;label.visible=false;return;}
- say('Коснись: '+NAMES[ORDER[ci]]+' ('+(ci+1)+'/'+ORDER.length+') и нажми триггер',lastNote===null?'или ударь по нему на установке, чтобы запомнить ноту':'последняя MIDI-нота: '+lastNote);}
-const v3=new THREE.Vector3();
-[0,1].forEach(i=>{const c=renderer.xr.getController(i);scene.add(c);
- c.add(new THREE.Mesh(new THREE.SphereGeometry(.015),new THREE.MeshBasicMaterial({color:0xffffff})));
- c.addEventListener('selectstart',()=>{if(mode!=='calib')return;c.getWorldPosition(v3);const d=PADS[ORDER[ci]];d.p=[v3.x,v3.y,v3.z];d.mesh.position.copy(v3);ci++;ask();});
- c.addEventListener('squeezestart',()=>{if(mode==='play'){mode='calib';ci=0;notes.forEach(n=>rig.remove(n.m));notes=[];label.visible=true;ask();}else if(mode==='calib'&&ci>0){ci--;ask();}});});
+ d.mesh=new THREE.Mesh(new THREE.CylinderGeometry(1,1,.015,32),d.mat);scene.add(d.mesh);d.flash=0;}
+function fit(d){const s=d.r*(1+d.flash*.25);d.mesh.scale.set(s,1,s);d.mesh.position.set(...d.p);}
+function mk(w,h,sx,sy,pos){const c=document.createElement('canvas');c.width=w;c.height=h;const t=new THREE.CanvasTexture(c);
+ const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthTest:false}));s.scale.set(sx,sy,1);s.position.set(...pos);scene.add(s);return{s,c,t};}
+function draw(o,lines,bg){const g=o.c.getContext('2d'),w=o.c.width,h=o.c.height;g.clearRect(0,0,w,h);g.fillStyle=bg;g.fillRect(0,0,w,h);g.textAlign='center';
+ lines.forEach((l,i)=>{g.font=(i?'34px':'bold 40px')+' sans-serif';g.fillStyle=i?'#ccc':'#fff';g.fillText(l,w/2,lines.length>1?h*(.4+i*.3):h*.6);});o.t.needsUpdate=true;}
+const L=mk(1024,256,.8,.2,[0,1.55,-.8]),B=mk(512,160,.3,.094,[.65,1.55,-.8]);
+
+let mode='idle',li=0,lastNote=null,grab=null,notes=[],start=0,spawned=-1,noteMap={};
+function rebuild(){noteMap={};for(const k of ORDER)PADS[k].m.forEach(n=>noteMap[n]=k);}rebuild();
+function ui(){
+ if(mode==='learn')draw(L,['Ударь по: '+PADS[ORDER[li]].n+' ('+(li+1)+'/'+ORDER.length+')',lastNote===null?'нота запомнится сама':'последняя MIDI-нота: '+lastNote],'rgba(0,0,0,.65)');
+ if(mode==='layout')draw(L,['Двигай круги пальцами','центр: перенести, край: размер'],'rgba(0,0,0,.65)');}
+function setMode(m){mode=m;L.s.visible=m!=='play';B.s.visible=m!=='learn';
+ notes.forEach(n=>scene.remove(n.m));notes=[];
+ if(m==='play'){start=performance.now()/1000+FALL;spawned=-1;draw(B,['Настроить'],'rgba(43,108,255,.9)');}
+ if(m==='layout')draw(B,['Готово'],'rgba(30,150,80,.9)');
+ ui();}
+function saveLayout(){const o={};ORDER.forEach(k=>o[k]={p:PADS[k].p,r:PADS[k].r});ls.set('drumvr-layout',o);}
+
+// MIDI
+function onMidi(e){const [s,n,v]=e.data;if((s&0xf0)!==0x90||v===0)return;lastNote=n;
+ if(mode==='learn'){if(!noteMap[n]){const d=PADS[ORDER[li]];d.m=[n];d.flash=1;rebuild();li++;
+   if(li>=ORDER.length){const o={};ORDER.forEach(k=>o[k]=PADS[k].m);ls.set('drumvr-notes',o);setMode('layout');return;}}
+  ui();return;}
+ if(noteMap[n])PADS[noteMap[n]].flash=1;}
+function hook(a){[...a.inputs.values()].forEach(i=>i.onmidimessage=onMidi);}
+try{navigator.requestMIDIAccess().then(a=>{hook(a);const n=[...a.inputs.values()].map(i=>i.name);
+ $("midi").textContent=n.length?"MIDI: найдено "+n.join(", "):"MIDI: устройств нет";a.onstatechange=()=>hook(a);
+}).catch(()=>$("midi").textContent="MIDI: нет доступа");}catch(e){$("midi").textContent="MIDI: не поддерживается";}
+
+// Пальцы (щипок большой+указательный) или контроллеры
+const ctl=[0,1].map(i=>{const c=renderer.xr.getController(i);scene.add(c);return c;});
+const hands=[0,1].map(i=>{const h=renderer.xr.getHand(i);scene.add(h);return h;});
+const P=v=>new THREE.Vector3(...v);
+function pointer(i){const j=hands[i].joints||{},a=j['index-finger-tip'],b=j['thumb-tip'];
+ if(a&&b&&a.visible&&b.visible)return a.position.clone().add(b.position).multiplyScalar(.5);
+ return ctl[i].getWorldPosition(new THREE.Vector3());}
+[0,1].forEach(i=>{
+ ctl[i].addEventListener('selectstart',()=>{const p=pointer(i);
+  if(B.s.visible&&p.distanceTo(B.s.position)<.12){if(mode==='layout'){saveLayout();setMode('play');}else setMode('layout');return;}
+  if(mode!=='layout')return;
+  let best=null,bd=9;for(const k of ORDER){const d=PADS[k],x=p.distanceTo(P(d.p));if(x<d.r*1.5&&x<bd){best=k;bd=x;}}
+  if(best){const d=PADS[best];grab={i,k:best,size:bd>d.r*.6,off:P(d.p).sub(p)};}});
+ ctl[i].addEventListener('selectend',()=>{if(grab&&grab.i===i){grab=null;saveLayout();}});});
+
+// Ноты
 const ng=new THREE.SphereGeometry(.045,16,12);
-function spawn(k,t){const m=new THREE.Mesh(ng,new THREE.MeshBasicMaterial({color:PADS[k].c}));rig.add(m);notes.push({k,t,m});}
+function spawn(k,t){const m=new THREE.Mesh(ng,new THREE.MeshBasicMaterial({color:PADS[k].c}));scene.add(m);notes.push({k,t,m});}
 renderer.setAnimationLoop(()=>{
  if(!renderer.xr.isPresenting)return;
- if(mode==='calib'){for(const k in PADS){const d=PADS[k];d.flash=Math.max(0,d.flash-.06);d.mat.opacity=(k===ORDER[ci]?.55+.35*Math.sin(performance.now()/180):.15)+d.flash*.4;d.mesh.scale.setScalar(1+d.flash*.25);}renderer.render(scene,camera);return;}
- const now=performance.now()/1000-start;
- for(let b=Math.max(0,Math.floor(now/BAR));b<=Math.floor((now+FALL)/BAR);b++)
-  for(const e of EV){const t=b*BAR+e.s*STEP;if(t>spawned&&t<=now+FALL)spawn(e.k,t);}
- spawned=Math.max(spawned,now+FALL);
- notes=notes.filter(n=>{const dt=n.t-now,p=PADS[n.k].p;
-  if(dt<-.05){rig.remove(n.m);PADS[n.k].flash=1;return false;}
-  n.m.position.set(p[0],p[1]+Math.max(dt,0)/FALL*H,p[2]);return true;});
- for(const k in PADS){const d=PADS[k];d.flash=Math.max(0,d.flash-.06);
-  d.mat.opacity=.35+d.flash*.65;d.mesh.scale.setScalar(1+d.flash*.25);}
+ if(grab){const d=PADS[grab.k],p=pointer(grab.i);
+  if(grab.size)d.r=Math.min(.45,Math.max(.05,p.distanceTo(P(d.p))));else d.p=[p.x+grab.off.x,p.y+grab.off.y,p.z+grab.off.z];}
+ if(mode==='play'){const now=performance.now()/1000-start;
+  for(let b=Math.max(0,Math.floor(now/BAR));b<=Math.floor((now+FALL)/BAR);b++)
+   for(const e of EV){const t=b*BAR+e.s*STEP;if(t>spawned&&t<=now+FALL)spawn(e.k,t);}
+  spawned=Math.max(spawned,now+FALL);
+  notes=notes.filter(n=>{const dt=n.t-now,p=PADS[n.k].p;
+   if(dt<-.05){scene.remove(n.m);PADS[n.k].flash=1;return false;}
+   n.m.position.set(p[0],p[1]+Math.max(dt,0)/FALL*H,p[2]);return true;});}
+ for(const k of ORDER){const d=PADS[k];d.flash=Math.max(0,d.flash-.06);
+  d.mat.opacity=(mode==='learn'?(k===ORDER[li]?.8:.15):.35)+d.flash*.6;fit(d);}
  renderer.render(scene,camera);
 });
-// Проверка MIDI: удар по настоящему барабану подсвечивает пэд
-let noteMap={};function rebuild(){noteMap={};for(const k in PADS)PADS[k].m.forEach(n=>noteMap[n]=k);}rebuild();
-function onMidi(e){const [s,n,v]=e.data;if((s&0xf0)!==0x90||v===0)return;lastNote=n;
- if(mode==='calib'&&ci<ORDER.length){const d=PADS[ORDER[ci]];if(!d.learned){d.m=[n];d.learned=true;}else if(!d.m.includes(n))d.m.push(n);rebuild();d.flash=1;ask();return;}
- if(noteMap[n])PADS[noteMap[n]].flash=1;}
-try{navigator.requestMIDIAccess().then(a=>{
- const ins=[...a.inputs.values()];ins.forEach(i=>i.onmidimessage=onMidi);
- $("midi").textContent=ins.length?"MIDI: найдено "+ins.map(i=>i.name).join(", "):"MIDI: устройств нет (это нормально на этом шаге)";
- a.onstatechange=()=>{[...a.inputs.values()].forEach(i=>i.onmidimessage=onMidi);};
-}).catch(()=>$("midi").textContent="MIDI: нет доступа в этом браузере");}
-catch(e){$("midi").textContent="MIDI: не поддерживается. Во фрейме: "+(window.top!==window?"да":"нет")+", secure: "+window.isSecureContext+", браузер: "+navigator.userAgent.slice(-45);}
-// Вход в AR
+
 (async()=>{
  const ok=navigator.xr&&await navigator.xr.isSessionSupported("immersive-ar").catch(()=>false);
  $("st").textContent=ok?"AR доступен. Поставь очки так, чтобы установка была перед тобой.":"AR недоступен. Открой страницу в браузере Quest.";
- $("go").disabled=!ok;
-})();
+ $("go").disabled=!ok;})();
 $("go").onclick=async()=>{
- try{const s=await navigator.xr.requestSession("immersive-ar",{optionalFeatures:["local-floor"]});
+ try{const s=await navigator.xr.requestSession("immersive-ar",{optionalFeatures:["local-floor","hand-tracking"]});
   renderer.xr.setReferenceSpaceType("local-floor");await renderer.xr.setSession(s);
-  notes.forEach(n=>rig.remove(n.m));notes=[];mode='calib';ci=0;label.visible=true;ask();
- }catch(e){$("st").textContent="Не вышло войти в AR: "+e.message;}
-};
+  setMode(ORDER.every(k=>PADS[k].m.length)?'layout':'learn');
+ }catch(e){$("st").textContent="Не вышло войти в AR: "+e.message;}};
+$("rst").onclick=()=>{ls.del('drumvr-notes');ls.del('drumvr-layout');$("rst").textContent="Сброшено, перезагрузи страницу";};
 </script></body></html>
