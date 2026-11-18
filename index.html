@@ -45,15 +45,15 @@ for(const k in PADS){const d=PADS[k];
  d.mat=new THREE.MeshBasicMaterial({color:d.c,transparent:true,opacity:.35});
  d.mesh=new THREE.Mesh(new THREE.CylinderGeometry(d.r,d.r,.015,32),d.mat);
  d.p=[d.p[0],d.p[1]+.8,d.p[2]-.8];d.mesh.position.set(...d.p);rig.add(d.mesh);d.flash=0;}
-let notes=[],start=0,spawned=-1,mode='idle',ci=0;
+let notes=[],start=0,spawned=-1,mode='idle',ci=0,lastNote=null;
 const ORDER=['hihat','snare','tom1','tom2','floor','crash','ride','kick'];
 const NAMES={hihat:'хэт',snare:'малый',tom1:'том 1',tom2:'том 2',floor:'напольный том',crash:'крэш',ride:'райд',kick:'бочка'};
 const tc=document.createElement('canvas');tc.width=1024;tc.height=256;const tx=new THREE.CanvasTexture(tc);
 const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tx,transparent:true,depthTest:false}));
 label.scale.set(.8,.2,1);label.position.set(0,1.45,-.8);scene.add(label);
-function say(t){const g=tc.getContext('2d');g.clearRect(0,0,1024,256);g.fillStyle='rgba(0,0,0,.65)';g.fillRect(0,40,1024,176);g.fillStyle='#fff';g.font='bold 52px sans-serif';g.textAlign='center';g.fillText(t,512,150);tx.needsUpdate=true;}
+function say(t,t2){const g=tc.getContext('2d');g.clearRect(0,0,1024,256);g.fillStyle='rgba(0,0,0,.65)';g.fillRect(0,20,1024,216);g.fillStyle='#fff';g.font='bold 40px sans-serif';g.textAlign='center';g.fillText(t,512,115);g.font='34px sans-serif';g.fillStyle='#ccc';g.fillText(t2||'',512,190);tx.needsUpdate=true;}
 function ask(){if(ci>=ORDER.length){mode='play';start=performance.now()/1000+FALL;spawned=-1;label.visible=false;return;}
- say('Коснись: '+NAMES[ORDER[ci]]+' ('+(ci+1)+'/'+ORDER.length+'), нажми триггер');}
+ say('Коснись: '+NAMES[ORDER[ci]]+' ('+(ci+1)+'/'+ORDER.length+') и нажми триггер',lastNote===null?'или ударь по нему на установке, чтобы запомнить ноту':'последняя MIDI-нота: '+lastNote);}
 const v3=new THREE.Vector3();
 [0,1].forEach(i=>{const c=renderer.xr.getController(i);scene.add(c);
  c.add(new THREE.Mesh(new THREE.SphereGeometry(.015),new THREE.MeshBasicMaterial({color:0xffffff})));
@@ -63,7 +63,7 @@ const ng=new THREE.SphereGeometry(.045,16,12);
 function spawn(k,t){const m=new THREE.Mesh(ng,new THREE.MeshBasicMaterial({color:PADS[k].c}));rig.add(m);notes.push({k,t,m});}
 renderer.setAnimationLoop(()=>{
  if(!renderer.xr.isPresenting)return;
- if(mode==='calib'){for(const k in PADS)PADS[k].mat.opacity=k===ORDER[ci]?.55+.35*Math.sin(performance.now()/180):.15;renderer.render(scene,camera);return;}
+ if(mode==='calib'){for(const k in PADS){const d=PADS[k];d.flash=Math.max(0,d.flash-.06);d.mat.opacity=(k===ORDER[ci]?.55+.35*Math.sin(performance.now()/180):.15)+d.flash*.4;d.mesh.scale.setScalar(1+d.flash*.25);}renderer.render(scene,camera);return;}
  const now=performance.now()/1000-start;
  for(let b=Math.max(0,Math.floor(now/BAR));b<=Math.floor((now+FALL)/BAR);b++)
   for(const e of EV){const t=b*BAR+e.s*STEP;if(t>spawned&&t<=now+FALL)spawn(e.k,t);}
@@ -76,8 +76,10 @@ renderer.setAnimationLoop(()=>{
  renderer.render(scene,camera);
 });
 // Проверка MIDI: удар по настоящему барабану подсвечивает пэд
-const noteMap={};for(const k in PADS)PADS[k].m.forEach(n=>noteMap[n]=k);
-function onMidi(e){const [s,n,v]=e.data;if((s&0xf0)===0x90&&v>0&&noteMap[n])PADS[noteMap[n]].flash=1;}
+let noteMap={};function rebuild(){noteMap={};for(const k in PADS)PADS[k].m.forEach(n=>noteMap[n]=k);}rebuild();
+function onMidi(e){const [s,n,v]=e.data;if((s&0xf0)!==0x90||v===0)return;lastNote=n;
+ if(mode==='calib'&&ci<ORDER.length){const d=PADS[ORDER[ci]];if(!d.learned){d.m=[n];d.learned=true;}else if(!d.m.includes(n))d.m.push(n);rebuild();d.flash=1;ask();return;}
+ if(noteMap[n])PADS[noteMap[n]].flash=1;}
 try{navigator.requestMIDIAccess().then(a=>{
  const ins=[...a.inputs.values()];ins.forEach(i=>i.onmidimessage=onMidi);
  $("midi").textContent=ins.length?"MIDI: найдено "+ins.map(i=>i.name).join(", "):"MIDI: устройств нет (это нормально на этом шаге)";
